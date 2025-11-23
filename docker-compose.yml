@@ -1,0 +1,31 @@
+services:
+  # Servicio 1: Tu Backend (Python/FastAPI)
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      - db
+    environment:
+      - DB_HOST=db
+      - DB_NAME=beatmatchprueba01
+      - DB_USER=postgres
+      - DB_PASSWORD=juanito123
+
+  # Servicio 2: Base de Datos (PostgreSQL)
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: juanito123
+      POSTGRES_DB: beatmatchprueba01
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

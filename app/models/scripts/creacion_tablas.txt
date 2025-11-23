@@ -1,0 +1,42 @@
+CREATE TABLE Usuario (
+id_usuario SERIAL PRIMARY KEY,
+nombre_usuario VARCHAR(50) NOT NULL,
+apellido_paterno VARCHAR(25) NOT NULL,
+apellido_materno VARCHAR(25),
+email VARCHAR(100) UNIQUE NOT NULL,
+usuario VARCHAR(25) UNIQUE NOT NULL,
+contrasena VARCHAR(25) NOT NULL,
+tipo_usuario BOOLEAN DEFAULT FALSE,
+genero BOOLEAN NOT NULL
+);
+
+
+CREATE TABLE Playlist (
+id_playlist SERIAL PRIMARY KEY,
+nombre VARCHAR(100) NOT NULL,
+descripcion TEXT,
+id_usuario INT NOT NULL,
+CONSTRAINT fk_usuario
+FOREIGN KEY (id_usuario)
+REFERENCES usuario(id_usuario)
+ON DELETE CASCADE
+);
+
+
+CREATE TABLE Cancion (
+id_cancion SERIAL PRIMARY KEY,
+id_cancion_spotify VARCHAR(50) UNIQUE NOT NULL,
+titulo VARCHAR(200)
+);
+
+
+CREATE TABLE Cancion_Playlist (
+id SERIAL PRIMARY KEY,
+id_playlist INT NOT NULL,
+CONSTRAINT fk_playlist
+FOREIGN KEY (id_playlist) REFERENCES playlist(id_playlist) ON DELETE CASCADE,
+id_cancion INT NOT NULL,
+CONSTRAINT fk_cancion
+FOREIGN KEY (id_cancion) REFERENCES cancion(id_cancion) ON DELETE CASCADE,
+UNIQUE (id_playlist, id_cancion)
+);

@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+spotipy
+requests
+httpx
+python-dotenv
+librosa
+numpy
+soundfile
+psycopg2-binary
