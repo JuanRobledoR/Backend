@@ -1,7 +1,9 @@
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import os
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from app.services.spotify_service import SpotifyService
 from app.services.audio_analysis import AudioAnalysisService  
 from dotenv import load_dotenv
@@ -13,11 +15,24 @@ app = FastAPI()
 
 
 
-#middleware
+#Coonfig CORS vite react
+origins = [
+    "http://localhost:5173",
+]
 
-#Coonfig CORS
-#vite react
+#middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 #Conectar routers
+
+
 
 @app.get("/")
 def inicio():
@@ -94,3 +109,26 @@ def get_features(url_cancion: str):
         return {"cromosoma": resultado.tolist()} 
     else:
         return {"error": "No se pudo procesar el audio"}
+
+@app.get("/buscar")
+async def buscar_cancion(q: str):
+    if not q:
+        return []
+    
+    # Usamos httpx para hablar con Deezer
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"https://api.deezer.com/search?q={q}&limit=5")
+        data = response.json()
+        
+    resultados = []
+    if "data" in data:
+        for track in data["data"]:
+            resultados.append({
+                "id": track["id"],
+                "titulo": track["title"],
+                "artista": track["artist"]["name"],
+                "imagen": track["album"]["cover_small"],
+                "preview": track["preview"]
+            })
+            
+    return resultados
