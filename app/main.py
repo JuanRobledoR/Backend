@@ -1,4 +1,6 @@
 import spotipy
+import random
+import asyncio
 from spotipy.oauth2 import SpotifyOAuth
 import os
 import httpx
@@ -7,20 +9,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.services.spotify_service import SpotifyService
 from app.services.audio_analysis import AudioAnalysisService  
 from dotenv import load_dotenv
+
 load_dotenv()
 
 app = FastAPI()
 
-#Credenciales de Spotify
+# Credenciales de Spotify
+# (Se cargan desde variables de entorno o tu servicio)
 
-
-
-#Coonfig CORS vite react
+# Coonfig CORS vite react
 origins = [
     "http://localhost:5173",
 ]
 
-#middleware
+# Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -30,9 +32,7 @@ app.add_middleware(
 )
 
 
-#Conectar routers
-
-
+# --- ROUTERS / ENDPOINTS ---
 
 @app.get("/")
 def inicio():
@@ -41,61 +41,32 @@ def inicio():
 @app.get("/playlist-tracks/{PLAYLIST_ID}")
 def top_tracks(PLAYLIST_ID: str):
     spotify_service = SpotifyService()
-    #PLAYLIST_ID = "6GjULfC3dnq103KCta8plp"
     resultado = spotify_service.enlistar_playlist(PLAYLIST_ID)
     return resultado
 
 @app.get("/datos-cancion/{TRACK_ID}")
 def datos_cancion(TRACK_ID: str):
     spotify_service = SpotifyService()
-    #TRACK_ID = "3hqCFeuaSOPov7JdWaTjST"
     resultado = spotify_service.leer_datos_cancion(TRACK_ID)
     return resultado
-
-'''
-@app.get("/audio-features/{TRACK_ID}")
-def audio_features(TRACK_ID: str):
-    spotify_service = SpotifyService()
-    #TRACK_ID = "3hqCFeuaSOPov7JdWaTjST"
-    resultado = spotify_service.obtener_audio_features(TRACK_ID)
-    return resultado
-
-@app.get("/preview_audio/{TRACK_ID}")
-def preview_audio(TRACK_ID: str):
-    spotify_service = SpotifyService()
-    #TRACK_ID = "3hqCFeuaSOPov7JdWaTjST"
-    resultado = spotify_service.obtener_preview_url(TRACK_ID)
-    return resultado
-'''
 
 @app.get("/nombre-cancion/{TRACK_ID}")
 def nombre_cancion(TRACK_ID: str):
     spotify_service = SpotifyService()
-    #TRACK_ID = "3hqCFeuaSOPov7JdWaTjST"
     resultado = spotify_service.obtener_nombre_cancion(TRACK_ID)
     return resultado
 
 @app.get("/artista-cancion/{TRACK_ID}")
 def artista_cancion(TRACK_ID: str):
     spotify_service = SpotifyService()
-    #TRACK_ID = "3hqCFeuaSOPov7JdWaTjST"
     resultado = spotify_service.obtener_artista(TRACK_ID)
     return resultado
 
 @app.get("/preview/{TRACK_ID}")
 def preview(TRACK_ID: str):
     spotify_service = SpotifyService()
-    #TRACK_ID = "3hqCFeuaSOPov7JdWaTjST"
     resultado = spotify_service.obtener_url_preview(TRACK_ID)
     return resultado
-
-'''
-@app.get("/get_audio/{URL_CANCION}")
-def get_audio(URL_CANCION: str):
-    audio_analisis = AudioAnalysisService()
-    resultado = audio_analisis.convertir_cancion(URL_CANCION)
-    return resultado
-'''
 
 @app.get("/features/") 
 def get_features(url_cancion: str): 
@@ -104,7 +75,7 @@ def get_features(url_cancion: str):
     print(f"Procesando URL: {url_cancion}") 
     resultado = audio_analisis.generar_cromosoma(url_cancion)
     
-    #numpy array a lista normalpara el envío en JSON
+    # numpy array a lista normal para el envío en JSON
     if resultado is not None:
         return {"cromosoma": resultado.tolist()} 
     else:
@@ -127,8 +98,99 @@ async def buscar_cancion(q: str):
                 "id": track["id"],
                 "titulo": track["title"],
                 "artista": track["artist"]["name"],
-                "imagen": track["album"]["cover_small"],
+                "imagen": track["album"]["cover_xl"],
                 "preview": track["preview"]
             })
             
     return resultados
+
+
+# --- Feed insano infinito ---
+
+@app.get("/feed-playlist/{playlist_id}")
+async def feed_playlist(playlist_id: str, offset: int = 0, limit: int = 10):
+    """
+    Obtiene la playlist completa de Spotify, selecciona 10 canciones 
+    TOTALMENTE AL AZAR y busca sus equivalentes en Deezer.
+    """
+    try:
+        print(f"Obteniendo playlist de Spotify: {playlist_id}")
+        spotify_service = SpotifyService()
+        
+        # 1. Obtener lista COMPLETA de Spotify
+        tracks_spotify = spotify_service.enlistar_playlist(playlist_id)
+        
+        if not tracks_spotify:
+            print("ERROR:La playlist de Spotify está vacía.")
+            return []
+
+        # 2. SELECCIÓN ALEATORIA (Aquí está el cambio que pediste)
+        # En lugar de cortar por offset, tomamos una muestra aleatoria.
+        print(f"Seleccionando {limit} canciones al azar de un total de {len(tracks_spotify)}...")
+        
+        lote_spotify = []
+        if len(tracks_spotify) > limit:
+            # random.sample toma elementos únicos sin repetir en esta tirada
+            lote_spotify = random.sample(tracks_spotify, limit)
+        else:
+            # Si hay pocas canciones (menos de 10), las tomamos todas y las revolvemos
+            lote_spotify = list(tracks_spotify)
+            random.shuffle(lote_spotify)
+        
+        print(f"Buscando {len(lote_spotify)} canciones seleccionadas en Deezer...")
+
+        # --- FUNCIÓN AUXILIAR BLINDADA (Se mantiene igual) ---
+        async def buscar_en_deezer(client, track_sp):
+            query = "Desconocido" 
+            try:
+                # DETECTAMOS QUÉ NOS MANDÓ SPOTIFY
+                if isinstance(track_sp, str):
+                    query = track_sp
+                elif isinstance(track_sp, dict):
+                    if 'track' in track_sp:
+                        nombre = track_sp['track'].get('name', '')
+                        artista = track_sp['track']['artists'][0].get('name', '') if track_sp['track'].get('artists') else ''
+                    else:
+                        nombre = track_sp.get('name', '')
+                        artista = track_sp.get('artists', [{}])[0].get('name', '')
+                    
+                    query = f"{artista} {nombre}".strip()
+                else:
+                    query = str(track_sp)
+
+                if not query or query == " ":
+                    return None
+
+                # Búsqueda en Deezer
+                response = await client.get(f"https://api.deezer.com/search?q={query}&limit=1")
+                data = response.json()
+
+                if "data" in data and len(data["data"]) > 0:
+                    t = data["data"][0]
+                    return {
+                        "id": t["id"],
+                        "titulo": t["title"],
+                        "artista": t["artist"]["name"],
+                        "imagen": t["album"]["cover_xl"], 
+                        "preview": t["preview"] 
+                    }
+            except Exception as e:
+                print(f" ---> Error buscando '{query}': {e}")
+            return None
+
+        # --- EJECUCIÓN PARALELA ---
+        resultados = []
+        async with httpx.AsyncClient() as client:
+            tareas = [buscar_en_deezer(client, track) for track in lote_spotify]
+            deezer_results = await asyncio.gather(*tareas)
+            resultados = [r for r in deezer_results if r is not None]
+
+        print(f"Se encontraron {len(resultados)} canciones en Deezer para enviar al front.")
+        
+        return resultados
+
+    except Exception as e:
+        print(f"ERROR GENERAL: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []

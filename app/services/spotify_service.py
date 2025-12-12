@@ -40,29 +40,32 @@ class SpotifyService:
         try:
             resultado = self.sp.playlist_items(PLAYLIST_ID, limit=100)
             lista_completa_items = resultado['items']
-            lista_id_canciones = []
 
             while resultado['next']:
                 resultado = self.sp.next(resultado)
                 lista_completa_items.extend(resultado['items'])
 
-            lista_id_canciones = [
-                item['track']['id'] 
-                for item in lista_completa_items 
-                if item.get('track') and item['track'].get('id')
-            ]
+            # CAMBIO AQUÍ: No devolvemos solo el ID, devolvemos un diccionario con datos
+            lista_canciones = []
+            for item in lista_completa_items:
+                track = item.get('track')
+                if track and track.get('id'):
+                    lista_canciones.append({
+                        'id': track['id'],
+                        'name': track['name'],
+                        # Guardamos estructura compatible con tu main.py
+                        'artists': [{'name': art['name']} for art in track['artists']]
+                    })
 
-#            for item in resultado['items']:
-#                track = item['track']
-#                lista_id_canciones.append(track['id']) 
-            print(len(lista_id_canciones))
-            return lista_id_canciones
+            print(f"Playlist procesada: {len(lista_canciones)} canciones obtenidas.")
+            return lista_canciones
         
         except Exception as e:
             print(e)
-            return None
+            return []
+        
 
-     
+
     def leer_datos_cancion(self, TRACK_ID):
         if not self.sp:
             return None
