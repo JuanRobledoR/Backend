@@ -1,42 +1,77 @@
+-- Limpieza inicial (Solo si estás en desarrollo)
+DROP TABLE IF EXISTS Me_Gusta CASCADE;
+DROP TABLE IF EXISTS Cancion_Playlist CASCADE;
+DROP TABLE IF EXISTS Cancion CASCADE;
+DROP TABLE IF EXISTS Playlist CASCADE;
+DROP TABLE IF EXISTS Usuario CASCADE;
+
+-- 1. USUARIOS (Igual que antes, base sólida)
 CREATE TABLE Usuario (
-id_usuario SERIAL PRIMARY KEY,
-nombre_usuario VARCHAR(50) NOT NULL,
-apellido_paterno VARCHAR(25) NOT NULL,
-apellido_materno VARCHAR(25),
-email VARCHAR(100) UNIQUE NOT NULL,
-usuario VARCHAR(25) UNIQUE NOT NULL,
-contrasena VARCHAR(25) NOT NULL,
-tipo_usuario BOOLEAN DEFAULT FALSE,
-genero BOOLEAN NOT NULL
+    id_usuario SERIAL PRIMARY KEY,
+    nombre_usuario VARCHAR(50) NOT NULL,
+    apellido_paterno VARCHAR(25) NOT NULL,
+    apellido_materno VARCHAR(25),
+    email VARCHAR(100) UNIQUE NOT NULL,
+    usuario VARCHAR(25) UNIQUE NOT NULL,
+    contrasena VARCHAR(25) NOT NULL,
+    tipo_usuario BOOLEAN DEFAULT FALSE,
+    genero BOOLEAN NOT NULL,
+    fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-
-CREATE TABLE Playlist (
-id_playlist SERIAL PRIMARY KEY,
-nombre VARCHAR(100) NOT NULL,
-descripcion TEXT,
-id_usuario INT NOT NULL,
-CONSTRAINT fk_usuario
-FOREIGN KEY (id_usuario)
-REFERENCES usuario(id_usuario)
-ON DELETE CASCADE
-);
-
-
+-- 2. CANCIONES (El "Catálogo Global" de tu app)
+-- Aquí se guardará todo lo que el usuario busque o de Like, sea de Spotify o Deezer.
 CREATE TABLE Cancion (
-id_cancion SERIAL PRIMARY KEY,
-id_cancion_spotify VARCHAR(50) UNIQUE NOT NULL,
-titulo VARCHAR(200)
+    id_cancion SERIAL PRIMARY KEY,
+    id_externo VARCHAR(100) NOT NULL, -- El ID de Spotify o Deezer
+    plataforma VARCHAR(20) NOT NULL,  -- 'SPOTIFY' o 'DEEZER'
+    titulo VARCHAR(200) NOT NULL,
+    artista VARCHAR(200) NOT NULL,
+    album VARCHAR(200),
+    imagen_url TEXT,                  -- Para mostrar la portada en el Swiper
+    preview_url TEXT,                 -- Para reproducir el audio de 30s
+    CONSTRAINT unq_cancion_externa UNIQUE (id_externo, plataforma)
 );
 
+-- 3. PLAYLISTS (Manuales o Importadas)
+CREATE TABLE Playlist (
+    id_playlist SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    descripcion TEXT,
+    id_usuario INT NOT NULL,
+    url_importada TEXT,               -- Aquí guardas el link de Spotify/Deezer si el usuario lo metió
+    tipo_origen VARCHAR(20) DEFAULT 'MANUAL', -- 'MANUAL', 'SPOTIFY_LINK', 'DEEZER_LINK'
+    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_usuario_pl 
+        FOREIGN KEY (id_usuario) 
+        REFERENCES Usuario(id_usuario) 
+        ON DELETE CASCADE
+);
 
+-- 4. RELACIÓN PLAYLIST <-> CANCIONES
+-- Permite que una playlist (manual o importada) tenga muchas canciones
 CREATE TABLE Cancion_Playlist (
-id SERIAL PRIMARY KEY,
-id_playlist INT NOT NULL,
-CONSTRAINT fk_playlist
-FOREIGN KEY (id_playlist) REFERENCES playlist(id_playlist) ON DELETE CASCADE,
-id_cancion INT NOT NULL,
-CONSTRAINT fk_cancion
-FOREIGN KEY (id_cancion) REFERENCES cancion(id_cancion) ON DELETE CASCADE,
-UNIQUE (id_playlist, id_cancion)
+    id SERIAL PRIMARY KEY,
+    id_playlist INT NOT NULL,
+    id_cancion INT NOT NULL,
+    fecha_agregada TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_cp_playlist 
+        FOREIGN KEY (id_playlist) REFERENCES Playlist(id_playlist) ON DELETE CASCADE,
+    CONSTRAINT fk_cp_cancion 
+        FOREIGN KEY (id_cancion) REFERENCES Cancion(id_cancion) ON DELETE CASCADE,
+    UNIQUE (id_playlist, id_cancion) -- Evita duplicados en la misma playlist
+);
+
+-- 5. ME GUSTA (Tu nueva funcionalidad <3)
+-- Tabla dedicada para guardar los likes del Swiper
+CREATE TABLE Me_Gusta (
+    id_like SERIAL PRIMARY KEY,
+    id_usuario INT NOT NULL,
+    id_cancion INT NOT NULL,
+    fecha_like TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_mg_usuario 
+        FOREIGN KEY (id_usuario) REFERENCES Usuario(id_usuario) ON DELETE CASCADE,
+    CONSTRAINT fk_mg_cancion 
+        FOREIGN KEY (id_cancion) REFERENCES Cancion(id_cancion) ON DELETE CASCADE,
+    UNIQUE (id_usuario, id_cancion) -- Un usuario no puede dar like dos veces a la misma
 );

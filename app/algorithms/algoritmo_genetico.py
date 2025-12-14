@@ -3,15 +3,18 @@ import random
 from typing import List, Dict
 
 class GeneticOptimizer:
-    def __init__(self, population_data: List[Dict], target_chromosome: List[float]):
+    def __init__(self, population_data: List[Dict], target_chromosome: List[float], target_size: int = 5):
         """
         :param population_data: Lista de dicts. Cada dict DEBE tener la key 'cromosoma' (lista de 16 floats) y 'id'.
         :param target_chromosome: El cromosoma de la canción base (la "semilla" de la playlist).
+        :param target_size: El número de canciones que quieres en la playlist final (Default 5, pero ahora soporta dinámico).
         """
         self.candidates = population_data
         self.target = np.array(target_chromosome)
         
-        self.playlist_size = 5   # Tamaño de la playlist resultante
+        # AHORA ES DINÁMICO (Lo que le mandes desde el endpoint)
+        self.playlist_size = target_size   
+        
         self.population_size = 20 # Individuos en la población
         self.generations = 50     # Iteraciones
         
@@ -83,15 +86,20 @@ class GeneticOptimizer:
 
     def crossover(self, parent1, parent2):
         """Mezcla dos playlists"""
+        # Protegemos el crossover si la lista es muy pequeña (ej. 1 canción)
+        if len(parent1) < 2:
+            return parent1
+
         split = random.randint(1, len(parent1) - 1)
         child = parent1[:split] + parent2[split:]
         
-        # Corte simple: si quedó más larga o corta, ajustamos (aunque con sample fijo no suele pasar)
+        # Corte simple: si quedó más larga o corta, ajustamos
         return child[:self.playlist_size]
 
     def run(self):
         # Si no hay suficientes canciones, regresamos las que haya
         if len(self.candidates) < self.playlist_size:
+            print(f"⚠️ Advertencia: Pocos candidatos ({len(self.candidates)}) para el target ({self.playlist_size}). Devolviendo todos.")
             return self.candidates
 
         # 1. Población Inicial

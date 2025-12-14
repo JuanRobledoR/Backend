@@ -11,7 +11,9 @@ from app.services.audio_analysis import AudioAnalysisService
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Optional, Union 
-from app.algorithms.algoritmo_genetico import GeneticOptimizer 
+from app.algorithms.algoritmo_genetico import GeneticOptimizer
+from app.routers import usuarios 
+from app.routers import usuarios, interacciones
 
 # --- MODELOS Pydantic ---
 
@@ -38,6 +40,18 @@ class SavePlaylistRequest(BaseModel):
     name: str = "BeatMatch Discovery"
     description: str = "Playlist generada con BeatMatch App"
 
+class SmartPlaylistRequest(BaseModel):
+    id_usuario: int
+    nombre_playlist: str = "Playlist IA Generada"
+    semilla_id: Optional[str] = None # Puede ser un track ID para basars
+
+class ImportSpotifyRequest(BaseModel):
+    id_usuario: int
+    spotify_playlist_id: str
+
+class CompletePlaylistRequest(BaseModel):
+    id_usuario: int
+    id_playlist: int
 
 load_dotenv()
 
@@ -56,6 +70,10 @@ app.add_middleware(
 
 
 # --- ROUTERS / ENDPOINTS ---
+app.include_router(usuarios.router)
+app.include_router(interacciones.router)
+
+
 
 @app.get("/")
 def inicio():
@@ -107,6 +125,82 @@ def crear_playlist_usuario(payload: SavePlaylistRequest):
         print(f"Error guardando playlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/importar-playlist-spotify")
+async def importar_spotify(payload: ImportSpotifyRequest):
+    """
+    Importación HÍBRIDA:
+    1. Obtiene la lista de canciones de Spotify (Id, Título, Artista).
+    2. Busca cada canción en Deezer para obtener la IMAGEN y el PREVIEW (MP3).
+    3. Guarda la mezcla perfecta en la Base de Datos.
+    """
+    try:
+        sp = SpotifyService()
+        print(f"--- 1. Obteniendo tracks de Spotify: {payload.spotify_playlist_id} ---")
+        tracks_spotify = sp.enlistar_playlist(payload.spotify_playlist_id)
+        
+        if not tracks_spotify:
+            raise HTTPException(status_code=404, detail="No se encontraron canciones en Spotify")
+
+        # Usamos nombre genérico porque el endpoint de tracks no devuelve el nombre de la playlist
+        nombre_pl = f"Importada de Spotify ({len(tracks_spotify)} canciones)"
+        
+        # Importamos las funciones de DB necesarias
+        from app.models.funciones_db import crear_playlist_db, agregar_cancion_a_playlist_db
+        
+        id_playlist_nueva = crear_playlist_db(payload.id_usuario, nombre_pl)
+
+        count = 0
+        print(f"--- 2. Enriqueciendo datos con Deezer ({len(tracks_spotify)} canciones) ---")
+        
+        async with httpx.AsyncClient() as client:
+            for t in tracks_spotify:
+                titulo = t['name']
+                artista = t['artists'][0]['name'] if t['artists'] else ""
+                
+                # Datos base (Por si Deezer falla, guardamos al menos el texto)
+                datos_cancion = {
+                    "id_externo": t['id'], # Mantenemos el ID de Spotify como referencia
+                    "plataforma": "SPOTIFY",
+                    "titulo": titulo,
+                    "artista": artista,
+                    "imagen_url": "", 
+                    "preview_url": "" 
+                }
+
+                # --- MAGIA: BUSCAR EN DEEZER ---
+                try:
+                    # Buscamos por Artista + Título para mayor precisión
+                    q = f'artist:"{artista}" track:"{titulo}"'
+                    resp = await client.get("https://api.deezer.com/search", params={"q": q, "limit": 1})
+                    data = resp.json()
+                    
+                    if data.get('data'):
+                        match = data['data'][0]
+                        # ¡ROBAMOS LOS DATOS RICOS!
+                        datos_cancion['imagen_url'] = match['album']['cover_xl']
+                        datos_cancion['preview_url'] = match['preview']
+                        print(f"✅ Encontrada en Deezer: {titulo}")
+                    else:
+                        print(f"⚠️ No encontrada en Deezer (Se guarda sin audio): {titulo}")
+
+                except Exception as e:
+                    print(f"Error buscando en Deezer: {e}")
+
+                # Guardamos en la DB
+                if agregar_cancion_a_playlist_db(id_playlist_nueva, datos_cancion):
+                    count += 1
+        
+        return {
+            "mensaje": "Importación Inteligente exitosa", 
+            "playlist_id": id_playlist_nueva, 
+            "canciones_procesadas": count
+        }
+
+    except Exception as e:
+        print(f"Error importando: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ------------------------------------------------------------------------------------------------------------------------------
 # ------- ENDPOINTS DEEZER & FEATURES ------------------------------------------------------------------------------------------
@@ -324,3 +418,207 @@ async def generar_playlist_inteligente(payload: PlaylistRequest):
         resultado_limpio.append(track_copy)
 
     return {"playlist_generada": resultado_limpio}
+
+
+@app.post("/crear-playlist-inteligente-auto")
+async def auto_smart_playlist(payload: SmartPlaylistRequest):
+    """
+    1. Crea playlist vacía.
+    2. Busca candidatos en Deezer (basado en likes o semilla).
+    3. Aplica Algoritmo Genético para seleccionar los mejores 20.
+    4. Guarda en DB.
+    """
+    # 1. Crear Playlist en DB
+    from app.models.funciones_db import crear_playlist_db, agregar_cancion_a_playlist_db, obtener_likes_db
+    
+    id_nueva_playlist = crear_playlist_db(payload.id_usuario, payload.nombre_playlist)
+    
+    # 2. Obtener Semilla (Target)
+    analyzer = AudioAnalysisService()
+    target_cromosoma = None
+    
+    # Si no nos dan semilla, usamos el promedio de sus Likes recientes
+    likes = obtener_likes_db(payload.id_usuario)
+    if not payload.semilla_id and likes:
+        # Usamos el último like como referencia rápida
+        last_like = likes[0]
+        print(f"Usando semilla de Like: {last_like['titulo']}")
+        target_cromosoma = analyzer.generar_cromosoma(last_like['preview'])
+        query_artist = last_like['artista']
+    else:
+        # Default o semilla especifica
+        query_artist = "Daft Punk" # Default fallback
+        # (Aquí podrías mejorar la lógica para buscar la semilla específica si viene en payload)
+
+    if target_cromosoma is None:
+        # Cromosoma dummy si falla todo
+        target_cromosoma = np.random.rand(16)
+
+    # 3. Buscar Candidatos (Usamos Deezer Search para traer MUCHOS)
+    candidatos_analizados = []
+    
+    async with httpx.AsyncClient() as client:
+        # Buscamos canciones relacionadas al artista semilla
+        resp = await client.get(f"https://api.deezer.com/search?q=artist:'{query_artist}'&limit=50")
+        data = resp.json()
+        
+        candidates_raw = data.get('data', [])
+        
+        # Analizamos audio de los candidatos (Esto toma tiempo, limitamos a 30 para no tardar años)
+        print("Analizando audios para la IA...")
+        for track in candidates_raw[:30]: 
+            if track['preview']:
+                cromo = analyzer.generar_cromosoma(track['preview'])
+                if cromo is not None:
+                    candidatos_analizados.append({
+                        "id": track["id"],
+                        "id_externo": str(track["id"]),
+                        "titulo": track["title"],
+                        "artista": track["artist"]["name"],
+                        "imagen_url": track["album"]["cover_xl"],
+                        "preview_url": track["preview"],
+                        "cromosoma": cromo.tolist(),
+                        "plataforma": "DEEZER"
+                    })
+
+    # 4. Ejecutar Algoritmo Genético
+    if len(candidatos_analizados) > 5:
+        print("Ejecutando Evolución...")
+        optimizer = GeneticOptimizer(
+            population_data=candidatos_analizados, 
+            target_chromosome=target_cromosoma.tolist(),
+            target_size=20 # <--- PEDIMOS 20 CANCIONES
+        )
+        seleccion_ia = optimizer.run()
+    else:
+        seleccion_ia = candidatos_analizados # Si hay pocos, guardamos todos
+
+    # 5. Guardar en DB
+    for track in seleccion_ia:
+        agregar_cancion_a_playlist_db(id_nueva_playlist, track)
+
+    return {"mensaje": "Playlist Generada con Éxito", "total": len(seleccion_ia)}
+
+
+@app.post("/completar-playlist-ia")
+async def completar_playlist_existente(payload: CompletePlaylistRequest):
+    """
+    Toma las canciones de una playlist existente, analiza su 'vibe' y agrega 5 nuevas.
+    Mejorado: Si las canciones no tienen preview (ej. Spotify), busca referencias externas.
+    """
+    from app.models.funciones_db import obtener_canciones_playlist_db, agregar_cancion_a_playlist_db, obtener_likes_db
+    
+    analyzer = AudioAnalysisService()
+    
+    # 1. Obtener canciones actuales de la playlist
+    canciones_actuales = obtener_canciones_playlist_db(payload.id_playlist)
+    
+    target_cromosoma = None
+    query_artist = "Daft Punk" # Default de seguridad
+    
+    # --- A. INTENTO 1: ANALIZAR AUDIO DE LA PLAYLIST ---
+    validas = [c for c in canciones_actuales if c['preview'] and len(c['preview']) > 0]
+    
+    if validas:
+        print(f"Analizando {len(validas)} canciones con audio nativo...")
+        cromosomas = []
+        for c in validas[:5]: 
+            try:
+                cromo = analyzer.generar_cromosoma(c['preview'])
+                if cromo is not None:
+                    cromosomas.append(cromo)
+            except: pass
+        
+        if cromosomas:
+            target_cromosoma = np.mean(cromosomas, axis=0)
+            query_artist = validas[0]['artista']
+
+    # --- B. INTENTO 2 (NUEVO): SI HAY CANCIONES PERO SIN AUDIO (Importadas de Spotify) ---
+    if target_cromosoma is None and len(canciones_actuales) > 0:
+        print("⚠️ Playlist con canciones pero sin audio. Buscando referencia externa...")
+        # Tomamos la primera canción como "Semilla"
+        ref_track = canciones_actuales[0]
+        query_artist = ref_track['artista']
+        query_track = ref_track['titulo']
+        
+        # Buscamos esta canción en Deezer para robarle el cromosoma
+        async with httpx.AsyncClient() as client:
+            try:
+                # Buscamos "Artista Titulo"
+                q = f"{query_artist} {query_track}"
+                resp = await client.get(f"https://api.deezer.com/search?q={q}&limit=1")
+                data = resp.json()
+                if data.get('data'):
+                    deezer_match = data['data'][0]
+                    if deezer_match.get('preview'):
+                        print(f"✅ Referencia encontrada en Deezer: {deezer_match['title']}")
+                        target_cromosoma = analyzer.generar_cromosoma(deezer_match['preview'])
+            except Exception as e:
+                print(f"Error buscando referencia: {e}")
+
+    # --- C. INTENTO 3: FALLBACK A ME GUSTA ---
+    if target_cromosoma is None:
+        print("Playlist vacía o imposible de analizar. Usando 'Me Gusta'...")
+        likes = obtener_likes_db(payload.id_usuario)
+        if likes:
+            last = likes[0]
+            if last.get('preview'): # Solo si el like tiene preview
+                target_cromosoma = analyzer.generar_cromosoma(last['preview'])
+                query_artist = last['artista']
+    
+    # Si después de todo sigue siendo None, error
+    if target_cromosoma is None:
+        raise HTTPException(status_code=400, detail="No se pudo analizar la playlist (sin audio) ni se encontraron likes válidos.")
+
+    # 3. BUSCAR CANDIDATOS (Deezer)
+    candidatos_analizados = []
+    ids_existentes = set(str(c['id_externo']) for c in canciones_actuales)
+
+    async with httpx.AsyncClient() as client:
+        # Buscamos tracks relacionados al artista detectado
+        print(f"Buscando candidatos similares a: {query_artist}")
+        resp = await client.get(f"https://api.deezer.com/search?q=artist:'{query_artist}'&limit=50")
+        data = resp.json()
+        raw = data.get('data', [])
+        
+        for track in raw:
+            # Filtros básicos
+            if str(track['id']) in ids_existentes: continue 
+            
+            if track['preview']:
+                try:
+                    cromo = analyzer.generar_cromosoma(track['preview'])
+                    if cromo is not None:
+                        candidatos_analizados.append({
+                            "id": track["id"], 
+                            "id_externo": str(track["id"]), 
+                            "titulo": track["title"],
+                            "artista": track["artist"]["name"],
+                            "imagen_url": track["album"]["cover_xl"],
+                            "preview_url": track["preview"],
+                            "cromosoma": cromo.tolist(),
+                            "plataforma": "DEEZER"
+                        })
+                except: pass
+                
+                if len(candidatos_analizados) >= 15: break 
+
+    # 4. ALGORITMO GENÉTICO
+    if not candidatos_analizados:
+         return {"mensaje": "No se encontraron candidatos suficientes."}
+
+    optimizer = GeneticOptimizer(
+        population_data=candidatos_analizados, 
+        target_chromosome=target_cromosoma.tolist(),
+        target_size=5 
+    )
+    seleccion = optimizer.run()
+
+    # 5. GUARDAR
+    count = 0
+    for track in seleccion:
+        track_db = track.copy()
+        if agregar_cancion_a_playlist_db(payload.id_playlist, track_db):
+            count += 1
+
+    return {"mensaje": "Completado con éxito", "agregadas": count}
