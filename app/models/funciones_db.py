@@ -409,3 +409,23 @@ def obtener_historial_db(id_usuario):
     except Exception as e:
         print(f"Error obteniendo historial: {e}")
         return []
+    
+def verificar_credenciales_db(username, password):
+    try:
+        cursor = connection.cursor()
+        # Buscamos coincidencias de usuario y contraseña
+        query = "SELECT id_usuario, usuario, email FROM Usuario WHERE usuario = %s AND contrasena = %s"
+        cursor.execute(query, (username, password))
+        usuario = cursor.fetchone()
+        cursor.close()
+        
+        if usuario:
+            return {
+                "id_usuario": usuario[0],
+                "username": usuario[1],
+                "email": usuario[2]
+            }
+        return None
+    except Exception as e:
+        print(f"Error en login db: {e}")
+        return None

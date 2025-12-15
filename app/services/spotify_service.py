@@ -69,6 +69,3 @@ class SpotifyService:
             track = self.sp.track(TRACK_ID)
             return [a['name'] for a in track.get('artists', [])]
         except: return None
-
-    # El resto de funciones (obtener_url_preview, etc) las puedes dejar si las usas en endpoints antiguos,
-    # pero el nuevo sistema de main.py usa Deezer directamente y no depende de ellas.

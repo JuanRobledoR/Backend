@@ -75,3 +75,16 @@ CREATE TABLE Me_Gusta (
         FOREIGN KEY (id_cancion) REFERENCES Cancion(id_cancion) ON DELETE CASCADE,
     UNIQUE (id_usuario, id_cancion) -- Un usuario no puede dar like dos veces a la misma
 );
+
+--6. HISTORIAL
+CREATE TABLE Historial (
+    id_historial SERIAL PRIMARY KEY,
+    id_usuario INTEGER NOT NULL,
+    id_cancion INTEGER NOT NULL,
+    tipo_interaccion VARCHAR(50) DEFAULT 'PLAY', -- Para saber si fue PLAY, SKIP o LIKE
+    fecha_interaccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Cuándo ocurrió
+    CONSTRAINT fk_historial_usuario 
+        FOREIGN KEY (id_usuario) REFERENCES Usuario(id_usuario) ON DELETE CASCADE,
+    CONSTRAINT fk_historial_cancion 
+        FOREIGN KEY (id_cancion) REFERENCES Cancion(id_cancion) ON DELETE CASCADE
+);
