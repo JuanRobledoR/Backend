@@ -1,5 +1,6 @@
 import psycopg2
 from app.models.config import connection
+import json
 
 # -----------------------------------------------------------------------------
 # --- 1. USUARIOS (LOGIN / REGISTRO) ------------------------------------------
@@ -58,6 +59,65 @@ def obtener_usuario_por_id(id_usuario: int):
     except Exception as e:
         print(e)
         return None
+    
+
+def guardar_cancion_con_cromosoma(datos_cancion: dict, cromosoma: list):
+    """
+    Guarda o actualiza una canción incluyendo su análisis de audio.
+    """
+    try:
+        cursor = connection.cursor()
+        # El cromosoma se guarda como un string JSON para la columna JSONB
+        cromosoma_json = json.dumps(cromosoma) if cromosoma else None
+        
+        query = """
+            INSERT INTO Cancion (id_externo, plataforma, titulo, artista, album, imagen_url, preview_url, cromosoma)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id_externo, plataforma) 
+            DO UPDATE SET cromosoma = EXCLUDED.cromosoma
+            RETURNING id_cancion;
+        """
+        cursor.execute(query, (
+            str(datos_cancion['id_externo']),
+            datos_cancion['plataforma'],
+            datos_cancion['titulo'],
+            datos_cancion['artista'],
+            datos_cancion.get('album'),
+            datos_cancion.get('imagen_url'),
+            datos_cancion.get('preview_url'),
+            cromosoma_json
+        ))
+        id_cancion = cursor.fetchone()[0]
+        connection.commit()
+        cursor.close()
+        return id_cancion
+    except Exception as e:
+        connection.rollback()
+        print(f"Error guardando canción con cromosoma: {e}")
+        return None
+
+def registrar_semilla_db(id_usuario: int, id_cancion: int):
+    """Registra una de las 10 canciones obligatorias del inicio."""
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "INSERT INTO Usuario_Semilla (id_usuario, id_cancion) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (id_usuario, id_cancion)
+        )
+        connection.commit()
+        cursor.close()
+        return True
+    except:
+        return False
+
+def contar_semillas_usuario(id_usuario: int):
+    """Cuenta cuántas canciones ha elegido el usuario para el onboarding."""
+    cursor = connection.cursor()
+    cursor.execute("SELECT COUNT(*) FROM Usuario_Semilla WHERE id_usuario = %s", (id_usuario,))
+    count = cursor.fetchone()[0]
+    cursor.close()
+    return count
+
 
 # -----------------------------------------------------------------------------
 # --- 2. LIKES E INTERACCIONES ------------------------------------------------
@@ -67,6 +127,7 @@ def registrar_like_db(id_usuario: int, datos_cancion: dict):
     """
     1. Verifica si la canción existe. Si no, la crea.
     2. Registra el like vinculando usuario y canción.
+    3. Retorna el id_cancion para el historial.
     """
     try:
         cursor = connection.cursor()
@@ -104,14 +165,15 @@ def registrar_like_db(id_usuario: int, datos_cancion: dict):
             ON CONFLICT (id_usuario, id_cancion) DO NOTHING;
         """
         cursor.execute(query_like, (id_usuario, id_cancion))
+        
         connection.commit()
         cursor.close()
-        return True
+        return id_cancion  # <--- Retornamos el ID
 
     except Exception as e:
         connection.rollback()
         print(f"Error registrando like: {e}")
-        return False
+        return None
 
 # -----------------------------------------------------------------------------
 # --- 3. HISTORIAL (NUEVO) ----------------------------------------------------

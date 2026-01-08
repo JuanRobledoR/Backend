@@ -48,29 +48,28 @@ class AddToPlaylistRequest(BaseModel):
 @router.post("/like")
 def dar_like(payload: LikeRequest):
     datos = payload.cancion.dict()
-    # 1. Guardamos el Like (y creamos la canción si no existe)
-    registrar_like_db(payload.id_usuario, datos)
     
-    # BORRAMOS O COMENTAMOS ESTAS LINEAS PARA QUE NO SE REPITA EN HISTORIAL:
-    # id_cancion = obtener_id_cancion_db(datos['id_externo'], datos['plataforma'])
-    # if id_cancion:
-    #    registrar_historial_db(payload.id_usuario, id_cancion, 'LIKE') <--- ¡FUERA!
+    # 1. Guardamos el Like y obtenemos el ID interno de la canción
+    id_cancion = registrar_like_db(payload.id_usuario, datos)
+    
+    # 2. Registramos la acción en el historial
+    if id_cancion:
+        registrar_historial_db(payload.id_usuario, id_cancion, 'LIKE')
 
-    return {"mensaje": "Like registrado"}
+    return {"mensaje": "Like e historial registrados"}
 
 @router.post("/dislike")
 def dar_dislike(payload: LikeRequest):
     datos = payload.cancion.dict()
     
-    # Solo aseguramos que la canción exista para futuras referencias, pero NO damos like
-    asegurar_cancion_existente(datos)
+    # 1. Solo aseguramos que la canción exista en la BD
+    id_cancion = asegurar_cancion_existente(datos)
 
-    # BORRAMOS O COMENTAMOS ESTO TAMBIÉN:
-    # id_cancion = obtener_id_cancion_db(...)
-    # if id_cancion:
-    #     registrar_historial_db(payload.id_usuario, id_cancion, 'DISLIKE') <--- ¡FUERA!
+    # 2. Registramos el rechazo en el historial
+    if id_cancion:
+        registrar_historial_db(payload.id_usuario, id_cancion, 'DISLIKE')
         
-    return {"mensaje": "Dislike registrado"}
+    return {"mensaje": "Dislike registrado en historial"}
 
 @router.get("/mis-likes/{id_usuario}")
 def ver_mis_likes(id_usuario: int):
@@ -83,6 +82,8 @@ def quitar_like(id_usuario: int, id_cancion: int):
     if exito:
         return {"mensaje": "Like eliminado"}
     raise HTTPException(status_code=500, detail="Error eliminando like")
+
+
 
 # -----------------------------------------------------------------------------
 # --- HISTORIAL ---

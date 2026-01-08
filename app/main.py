@@ -1,12 +1,14 @@
 import spotipy
 import random
 import asyncio
+import numpy as np
 from spotipy.oauth2 import SpotifyOAuth
 import os
 import httpx
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import usuarios, interacciones, auth
+from fastapi import Query
 
 # Importaciones de servicios propios del proyecto
 from app.services.spotify_service import SpotifyService
@@ -16,10 +18,29 @@ from pydantic import BaseModel
 from typing import List, Optional, Union
 
 # Importación del núcleo de la IA
-from app.algorithms.algoritmo_genetico import GeneticOptimizer
+from app.algorithms.algoritmo_genetico import RealGeneticOptimizer
 
 # Routers para modularizar la app
 from app.routers import usuarios, interacciones
+
+from app.schemas import LikeRequest
+from app.schemas import UsuarioCreate, UsuarioResponse, LikeRequest, CancionBase
+
+from app.algorithms.algoritmo_genetico import RealGeneticOptimizer
+from app.algorithms.pseudogenetico import GeneticOptimizer
+
+from app.models.funciones_db import connection
+
+from app.models.funciones_db import (
+    crear_usuario_db, 
+    obtener_usuario_por_id,
+    contar_semillas_usuario,       # <--- Indispensable
+    guardar_cancion_con_cromosoma, # <--- Indispensable
+    registrar_semilla_db,          # <--- Indispensable
+    registrar_like_db,             # <--- Indispensable
+    crear_playlist_db,             # Para Spotify
+    agregar_cancion_a_playlist_db  # Para Spotify
+)
 
 
 
@@ -164,40 +185,59 @@ def crear_playlist_usuario(payload: SavePlaylistRequest):
 @app.post("/importar-playlist-spotify")
 async def importar_spotify(payload: ImportSpotifyRequest):
     """
-    IMPORTACIÓN HÍBRIDA (La lógica compleja):
-    Spotify tiene buena data, pero no da MP3 (Preview) para analizar.
-    Deezer sí da MP3. 
-    Este endpoint cruza ambas plataformas.
+    IMPORTACIÓN INTELIGENTE Y POBLADO DE DB:
+    1. Trae tracks de Spotify.
+    2. Crea la playlist en Postgres.
+    3. Para cada track:
+       - Busca en Deezer para obtener el MP3 (Preview).
+       - Si no tiene cromosoma en la DB, lo genera con la IA.
+       - Guarda todo en la DB global (Pool de canciones).
+       - Si el usuario necesita semillas de onboarding, las registra.
     """
     try:
         sp = SpotifyService()
+        analyzer = AudioAnalysisService()
+        
+        # Importaciones locales para evitar líos de dependencias
+        from app.models.funciones_db import (
+            crear_playlist_db, 
+            guardar_cancion_con_cromosoma, 
+            agregar_cancion_a_playlist_db,
+            contar_semillas_usuario,
+            registrar_semilla_db,
+            crear_usuario_db, 
+            obtener_usuario_por_id,
+            contar_semillas_usuario,       # <--- IMPORTANTE
+            guardar_cancion_con_cromosoma, # <--- IMPORTANTE
+            registrar_semilla_db,          # <--- IMPORTANTE
+            registrar_like_db
+        )
+
         print(f"--- 1. Obteniendo tracks de Spotify: {payload.spotify_playlist_id} ---")
         tracks_spotify = sp.enlistar_playlist(payload.spotify_playlist_id)
         
         if not tracks_spotify:
             raise HTTPException(status_code=404, detail="No se encontraron canciones en Spotify")
 
+        # Crear playlist en DB
         nombre_pl = f"Importada de Spotify ({len(tracks_spotify)} canciones)"
-        
-        # Importación diferida para evitar ciclos circulares
-        from app.models.funciones_db import crear_playlist_db, agregar_cancion_a_playlist_db
-        
-        # Crea la playlist contenedora en Postgres
         id_playlist_nueva = crear_playlist_db(payload.id_usuario, nombre_pl)
 
-        count = 0
-        print(f"--- 2. Enriqueciendo datos con Deezer ({len(tracks_spotify)} canciones) ---")
+        count_procesadas = 0
         
-        # Uso de AsyncClient para no bloquear el servidor mientras buscamos en Deezer
+        # Revisamos cuántas semillas le faltan al usuario para el onboarding
+        semillas_actuales = contar_semillas_usuario(payload.id_usuario)
+
+        print(f"--- 2. Procesando y Analizando ({len(tracks_spotify)} canciones) ---")
+        
         async with httpx.AsyncClient() as client:
             for t in tracks_spotify:
                 titulo = t['name']
-                # Manejo seguro porsi no hay artista
-                artista = t['artists'][0]['name'] if t['artists'] else ""
+                artista = t['artists'][0]['name'] if t['artists'] else "Unknown"
+                id_spotify = t['id']
                 
-                # Objeto base con datos de spotify
                 datos_cancion = {
-                    "id_externo": t['id'], 
+                    "id_externo": id_spotify,
                     "plataforma": "SPOTIFY",
                     "titulo": titulo,
                     "artista": artista,
@@ -205,37 +245,55 @@ async def importar_spotify(payload: ImportSpotifyRequest):
                     "preview_url": "" 
                 }
 
-                # --- CRUCE DE DATOS ---
+                # --- A. Búsqueda de Preview en Deezer ---
+                cromosoma = None
                 try:
-                    # Busca la misma canción en Deezer
                     q = f'artist:"{artista}" track:"{titulo}"'
                     resp = await client.get("https://api.deezer.com/search", params={"q": q, "limit": 1})
                     data = resp.json()
                     
                     if data.get('data'):
                         match = data['data'][0]
-                        # Si existe, adquirimos la imagen y el album
                         datos_cancion['imagen_url'] = match['album']['cover_xl']
                         datos_cancion['preview_url'] = match['preview']
-                        print(f"✅ Encontrada en Deezer: {titulo}")
+                        
+                        # --- B. Análisis de Audio (Solo si tenemos preview) ---
+                        if datos_cancion['preview_url']:
+                            print(f"🧬 Analizando vibe de: {titulo}")
+                            cromo_raw = analyzer.generar_cromosoma(datos_cancion['preview_url'])
+                            if cromo_raw is not None:
+                                cromosoma = cromo_raw.tolist()
                     else:
-                        print(f"⚠️ No encontrada en Deezer (Se guarda sin audio): {titulo}")
+                        print(f"⚠️ Sin preview para: {titulo}")
 
                 except Exception as e:
-                    print(f"Error buscando en Deezer: {e}")
+                    print(f"Error en cruce/análisis de {titulo}: {e}")
 
-                # Se guarda en BD local
-                if agregar_cancion_a_playlist_db(id_playlist_nueva, datos_cancion):
-                    count += 1
-        
+                # --- C. Guardado en el Pool Global (Tabla Cancion) ---
+                # Esta función hace el insert/update con el cromosoma
+                id_cancion_db = guardar_cancion_con_cromosoma(datos_cancion, cromosoma)
+
+                if id_cancion_db:
+                    # --- D. Vincular a la Playlist del usuario ---
+                    agregar_cancion_a_playlist_db(id_playlist_nueva, datos_cancion)
+                    
+                    # --- E. Lógica de Onboarding (Auto-completado) ---
+                    # Si el usuario tiene menos de 10 semillas, usamos estas como sus semillas iniciales
+                    if semillas_actuales < 10:
+                        registrar_semilla_db(payload.id_usuario, id_cancion_db)
+                        semillas_actuales += 1
+                    
+                    count_procesadas += 1
+
         return {
-            "mensaje": "Importación Inteligente exitosa", 
+            "mensaje": "Importación y Análisis completado", 
             "playlist_id": id_playlist_nueva, 
-            "canciones_procesadas": count
+            "nuevas_en_pool": count_procesadas,
+            "onboarding_status": f"{semillas_actuales}/10 semillas"
         }
 
     except Exception as e:
-        print(f"Error importando: {e}")
+        print(f"Error fatal importando: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -426,18 +484,13 @@ async def feed_playlist_infinito(payload: FeedRequest):
 async def generar_playlist_inteligente(payload: PlaylistRequest):
     analyzer = AudioAnalysisService()
     
-    # 1. Analizar el objetivo (Extraer features de audio)
     print("--- 1. Analizando Target ---")
     target_cromosoma = analyzer.generar_cromosoma(payload.target_track_url)
-    
     if target_cromosoma is None:
-        return {"error": "No se pudo analizar la canción objetivo (URL inválida o sin audio)"}
+        return {"error": "No se pudo analizar la canción objetivo"}
 
-    target_list = target_cromosoma.tolist()
-
-    # 2. Analizar candidatos
     print(f"--- 2. Analizando {len(payload.candidates)} Candidatos ---")
-    processed_candidates = []
+    processed_candidates = [] # <--- Esta es la lista correcta
     
     for track in payload.candidates:
         if track.preview_url:
@@ -456,18 +509,15 @@ async def generar_playlist_inteligente(payload: PlaylistRequest):
                 print(f"Error analizando {track.titulo}: {e}")
                 
     if len(processed_candidates) < 5:
-        return {"error": "No hay suficientes candidatos válidos (con preview) para armar la playlist."}
+        return {"error": "No hay suficientes candidatos válidos."}
 
-    # 3. Evolución Genética
-    print("--- 3. Ejecutando Algoritmo Genético ---")
-    optimizer = GeneticOptimizer(
-        population_data=processed_candidates, 
-        target_chromosome=target_list
-    )
+    # --- 3. Evolución Genética ---
+    # Cambiamos 'candidatos_analizados' por 'processed_candidates'
+    optimizer = RealGeneticOptimizer(song_pool=processed_candidates, target_vibe=target_cromosoma)
     
     mejor_playlist = optimizer.run()
     
-    # Limpiar resultado (quitar datos matemáticos pesados)
+    # Limpiar resultado
     resultado_limpio = []
     for track in mejor_playlist:
         track_copy = track.copy()
@@ -544,8 +594,8 @@ async def auto_smart_playlist(payload: SmartPlaylistRequest):
         print("Ejecutando Evolución...")
         optimizer = GeneticOptimizer(
             population_data=candidatos_analizados, 
-            target_chromosome=target_cromosoma.tolist(),
-            target_size=20 # Queremos una playlist de 20 canciones
+            target_chromosome=target_cromosoma.tolist() if isinstance(target_cromosoma, np.ndarray) else target_cromosoma,
+            target_size=20
         )
         seleccion_ia = optimizer.run()
     else:
@@ -682,3 +732,179 @@ async def completar_playlist_existente(payload: CompletePlaylistRequest):
             count += 1
 
     return {"mensaje": "Completado con éxito", "agregadas": count}
+
+
+# Nuevo endpoint para el Onboarding
+@app.get("/usuarios/check-onboarding/{id_usuario}")
+def check_onboarding(id_usuario: int):
+    count = contar_semillas_usuario(id_usuario) 
+    return {
+        "completado": count >= 10,
+        "faltantes": max(0, 10 - count)
+    }
+
+@app.post("/usuarios/registrar-semilla")
+async def registrar_semilla(payload: LikeRequest):
+    analyzer = AudioAnalysisService()
+    
+    # Análisis de audio
+    cromosoma = None
+    if payload.cancion.preview_url:
+        cromo_raw = analyzer.generar_cromosoma(payload.cancion.preview_url)
+        if cromo_raw is not None:
+            cromosoma = cromo_raw.tolist()
+
+    # Guardado en Pool Global (Tabla Cancion)
+    id_cancion = guardar_cancion_con_cromosoma(payload.cancion.dict(), cromosoma)
+    
+    if id_cancion:
+        # Registrar en la tabla de control de onboarding
+        registrar_semilla_db(payload.id_usuario, id_cancion)
+        
+        # Guardar directamente en la tabla de "Me Gusta"
+        registrar_like_db(payload.id_usuario, payload.cancion.dict())
+        
+        return {
+            "mensaje": "Semilla y Like registrados", 
+            "total": contar_semillas_usuario(payload.id_usuario)
+        }
+    
+    raise HTTPException(status_code=500, detail="Error al procesar la canción en la BD")
+
+
+
+
+
+async def refrescar_links_deezer(lista_canciones: list):
+    import httpx
+    import asyncio
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        tareas = []
+        for s in lista_canciones:
+            id_deezer = s.get('id_externo')
+            url_api = f"https://api.deezer.com/track/{id_deezer}"
+            tareas.append(client.get(url_api))
+        
+        respuestas = await asyncio.gather(*tareas, return_exceptions=True)
+        for i, resp in enumerate(respuestas):
+            if isinstance(resp, httpx.Response) and resp.status_code == 200:
+                lista_canciones[i]['preview'] = resp.json().get('preview')
+    return lista_canciones
+
+# 2. Endpoint de la IA con Exclusión en tiempo real
+@app.get("/generar-smart-playlist/{id_usuario}")
+async def endpoint_ia_real(id_usuario: int, exclude: List[int] = Query([])):
+    from app.models.funciones_db import connection
+    import numpy as np
+    cursor = connection.cursor()
+
+    try:
+        # A. Obtener historial y likes de la DB + lo que el front ya tiene
+        cursor.execute("SELECT id_cancion FROM Historial WHERE id_usuario = %s UNION SELECT id_cancion FROM Me_Gusta WHERE id_usuario = %s", (id_usuario, id_usuario))
+        vistas_db = [r[0] for r in cursor.fetchall()]
+        
+        # Lista negra total: DB + lo que el usuario está viendo actualmente
+        lista_negra = list(set(vistas_db + exclude))
+
+        # B. ADN del usuario (Promedio de sus Likes)
+        cursor.execute("SELECT c.cromosoma FROM Me_Gusta m JOIN Cancion c ON m.id_cancion = c.id_cancion WHERE m.id_usuario = %s AND c.cromosoma IS NOT NULL ORDER BY m.fecha_like DESC LIMIT 20", (id_usuario,))
+        semillas = cursor.fetchall()
+        if not semillas:
+            raise HTTPException(status_code=400, detail="Faltan likes")
+
+        target_vibe = np.mean([np.array(s[0]) for s in semillas], axis=0)
+
+        # C. Obtener candidatos EXCLUYENDO la lista negra
+        query = "SELECT id_cancion, titulo, artista, imagen_url, preview_url, cromosoma, id_externo FROM Cancion WHERE cromosoma IS NOT NULL"
+        if lista_negra:
+            query += f" AND id_cancion NOT IN ({','.join(map(str, lista_negra))})"
+        
+        cursor.execute(query + " LIMIT 300")
+        rows = cursor.fetchall()
+        
+        # Fix NameError: Definir song_pool siempre
+        song_pool = [{"id": r[0], "titulo": r[1], "artista": r[2], "imagen": r[3], "preview": r[4], "cromosoma": r[5], "id_externo": r[6]} for r in rows]
+
+        if len(song_pool) < 5:
+             # Si se acaban, relajamos el filtro pero mezclamos para que no se sienta igual
+             cursor.execute("SELECT id_cancion, titulo, artista, imagen_url, preview_url, cromosoma, id_externo FROM Cancion WHERE cromosoma IS NOT NULL ORDER BY RANDOM() LIMIT 100")
+             rows = cursor.fetchall()
+             song_pool = [{"id": r[0], "titulo": r[1], "artista": r[2], "imagen": r[3], "preview": r[4], "cromosoma": r[5], "id_externo": r[6]} for r in rows]
+
+        # D. IA y Limpieza
+        optimizer = RealGeneticOptimizer(song_pool, target_vibe, playlist_size=10)
+        mejor_playlist = optimizer.run()
+        
+        resultado = []
+        for s in mejor_playlist:
+            t = s.copy()
+            t.pop('cromosoma', None)
+            resultado.append(t)
+
+        # E. REFRESH DE AUDIO (Para que funcionen las previews)
+        return {"playlist_evolucionada": await refrescar_links_deezer(resultado)}
+
+    finally:
+        cursor.close()
+
+
+
+@app.post("/usuarios/registrar-semilla")
+async def registrar_semilla(payload: LikeRequest):
+    analyzer = AudioAnalysisService()
+    from app.models.funciones_db import (
+        guardar_cancion_con_cromosoma, 
+        registrar_semilla_db, 
+        registrar_like_db,
+        contar_semillas_usuario
+    )
+    
+    # 1. Analizar y Guardar en Pool Global
+    cromosoma = None
+    if payload.cancion.preview_url:
+        cromo_raw = analyzer.generar_cromosoma(payload.cancion.preview_url)
+        if cromo_raw is not None:
+            cromosoma = cromo_raw.tolist()
+
+    id_cancion = guardar_cancion_con_cromosoma(payload.cancion.dict(), cromosoma)
+    
+    if id_cancion:
+        # 2. Registrar como Semilla (para el control de onboarding)
+        registrar_semilla_db(payload.id_usuario, id_cancion)
+        
+        # 3. ¡NUEVO!: Guardar directamente en "Me Gusta"
+        registrar_like_db(payload.id_usuario, payload.cancion.dict())
+        
+        return {"mensaje": "Semilla y Like registrados", "total": contar_semillas_usuario(payload.id_usuario)}
+    
+    raise HTTPException(status_code=500, detail="Error al procesar")
+
+
+@app.get("/admin/stats")
+def get_admin_stats():
+    from app.models.config import connection
+    cursor = connection.cursor()
+    
+    # 1. Total de usuarios
+    cursor.execute("SELECT COUNT(*) FROM Usuario")
+    total_usuarios = cursor.fetchone()[0]
+    
+    # 2. Total de canciones en el pool global
+    cursor.execute("SELECT COUNT(*) FROM Cancion")
+    total_canciones = cursor.fetchone()[0]
+    
+    # 3. Canciones ya analizadas por la IA (con cromosoma)
+    cursor.execute("SELECT COUNT(*) FROM Cancion WHERE cromosoma IS NOT NULL")
+    canciones_ia = cursor.fetchone()[0]
+    
+    # 4. Últimas 5 canciones agregadas
+    cursor.execute("SELECT titulo, artista, plataforma FROM Cancion ORDER BY id_cancion DESC LIMIT 5")
+    recientes = [{"titulo": r[0], "artista": r[1], "plataforma": r[2]} for r in cursor.fetchall()]
+    
+    cursor.close()
+    return {
+        "usuarios": total_usuarios,
+        "canciones_totales": total_canciones,
+        "canciones_ia": canciones_ia,
+        "recientes": recientes
+    }
