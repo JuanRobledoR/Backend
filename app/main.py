@@ -34,7 +34,8 @@ app = FastAPI(
 )
 
 # Configura CORS
-origins = ["*"] 
+origins = ["https://frontend-r4hr.onrender.com",
+           "http://localhost:5173",] 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
