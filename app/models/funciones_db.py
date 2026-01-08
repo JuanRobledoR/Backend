@@ -2,12 +2,8 @@ import psycopg2
 from app.models.config import connection
 import json
 
-# -----------------------------------------------------------------------------
-# --- 1. USUARIOS (LOGIN / REGISTRO) ------------------------------------------
-# -----------------------------------------------------------------------------
-
+# Inserta usuario en DB
 def crear_usuario_db(datos_usuario: dict):
-    """Inserta un nuevo usuario en PostgreSQL"""
     try:
         cursor = connection.cursor()
         query = """
@@ -38,6 +34,7 @@ def crear_usuario_db(datos_usuario: dict):
         print(f"Error crear usuario: {e}")
         return None
 
+# Busca usuario por ID
 def obtener_usuario_por_id(id_usuario: int):
     try:
         cursor = connection.cursor()
@@ -60,14 +57,10 @@ def obtener_usuario_por_id(id_usuario: int):
         print(e)
         return None
     
-
+# Upsert de canción y cromosoma
 def guardar_cancion_con_cromosoma(datos_cancion: dict, cromosoma: list):
-    """
-    Guarda o actualiza una canción incluyendo su análisis de audio.
-    """
     try:
         cursor = connection.cursor()
-        # El cromosoma se guarda como un string JSON para la columna JSONB
         cromosoma_json = json.dumps(cromosoma) if cromosoma else None
         
         query = """
@@ -96,8 +89,8 @@ def guardar_cancion_con_cromosoma(datos_cancion: dict, cromosoma: list):
         print(f"Error guardando canción con cromosoma: {e}")
         return None
 
+# Guarda selección de onboarding
 def registrar_semilla_db(id_usuario: int, id_cancion: int):
-    """Registra una de las 10 canciones obligatorias del inicio."""
     try:
         cursor = connection.cursor()
         cursor.execute(
@@ -110,29 +103,19 @@ def registrar_semilla_db(id_usuario: int, id_cancion: int):
     except:
         return False
 
+# Retorna conteo de semillas
 def contar_semillas_usuario(id_usuario: int):
-    """Cuenta cuántas canciones ha elegido el usuario para el onboarding."""
     cursor = connection.cursor()
     cursor.execute("SELECT COUNT(*) FROM Usuario_Semilla WHERE id_usuario = %s", (id_usuario,))
     count = cursor.fetchone()[0]
     cursor.close()
     return count
 
-
-# -----------------------------------------------------------------------------
-# --- 2. LIKES E INTERACCIONES ------------------------------------------------
-# -----------------------------------------------------------------------------
-
+# Procesa transacción de like
 def registrar_like_db(id_usuario: int, datos_cancion: dict):
-    """
-    1. Verifica si la canción existe. Si no, la crea.
-    2. Registra el like vinculando usuario y canción.
-    3. Retorna el id_cancion para el historial.
-    """
     try:
         cursor = connection.cursor()
         
-        # A. GESTIÓN DE LA CANCIÓN
         cursor.execute(
             "SELECT id_cancion FROM Cancion WHERE id_externo = %s AND plataforma = %s",
             (datos_cancion['id_externo'], datos_cancion['plataforma'])
@@ -158,7 +141,6 @@ def registrar_like_db(id_usuario: int, datos_cancion: dict):
             ))
             id_cancion = cursor.fetchone()[0]
 
-        # B. REGISTRAR EL LIKE
         query_like = """
             INSERT INTO Me_Gusta (id_usuario, id_cancion)
             VALUES (%s, %s)
@@ -168,19 +150,15 @@ def registrar_like_db(id_usuario: int, datos_cancion: dict):
         
         connection.commit()
         cursor.close()
-        return id_cancion  # <--- Retornamos el ID
+        return id_cancion
 
     except Exception as e:
         connection.rollback()
         print(f"Error registrando like: {e}")
         return None
 
-# -----------------------------------------------------------------------------
-# --- 3. HISTORIAL (NUEVO) ----------------------------------------------------
-# -----------------------------------------------------------------------------
-
+# Registra interacción en historial
 def registrar_historial_db(id_usuario, id_cancion, tipo):
-    """Guarda si fue LIKE o DISLIKE"""
     try:
         cursor = connection.cursor()
         query = """
@@ -194,12 +172,14 @@ def registrar_historial_db(id_usuario, id_cancion, tipo):
         print(f"Error historial: {e}")
         connection.rollback()
 
+# Obtiene historial reciente
 def obtener_historial_db(id_usuario):
-    """Obtiene todo lo que el usuario ha visto"""
     try:
         cursor = connection.cursor()
+        # Se agrega id_externo, plataforma y preview para el frontend
         query = """
-            SELECT c.titulo, c.artista, c.imagen_url, h.tipo_interaccion, h.fecha_interaccion
+            SELECT c.titulo, c.artista, c.imagen_url, h.tipo_interaccion, h.fecha_interaccion, 
+                   c.id_externo, c.plataforma, c.preview_url, c.id_cancion
             FROM Historial h
             JOIN Cancion c ON h.id_cancion = c.id_cancion
             WHERE h.id_usuario = %s
@@ -208,20 +188,26 @@ def obtener_historial_db(id_usuario):
         cursor.execute(query, (id_usuario,))
         res = cursor.fetchall()
         cursor.close()
-        return [{"titulo": r[0], "artista": r[1], "imagen": r[2], "tipo": r[3], "fecha": r[4]} for r in res]
+        return [{
+            "titulo": r[0], 
+            "artista": r[1], 
+            "imagen": r[2], 
+            "tipo": r[3], 
+            "fecha": r[4],
+            "id_externo": r[5],   
+            "plataforma": r[6],
+            "preview": r[7],      
+            "id_interno": r[8]
+        } for r in res]
     except Exception as e:
         print(f"Error obteniendo historial: {e}")
         return []
     
+# Verifica o crea canción sin like
 def asegurar_cancion_existente(datos_cancion: dict):
-    """
-    Solo verifica si la canción existe en la DB. Si no, la crea.
-    NO genera relación de 'Me Gusta'.
-    """
     try:
         cursor = connection.cursor()
         
-        # Verificar si existe
         cursor.execute(
             "SELECT id_cancion FROM Cancion WHERE id_externo = %s AND plataforma = %s",
             (datos_cancion['id_externo'], datos_cancion['plataforma'])
@@ -231,7 +217,6 @@ def asegurar_cancion_existente(datos_cancion: dict):
         if resultado:
             id_cancion = resultado[0]
         else:
-            # Crear si no existe
             query_cancion = """
                 INSERT INTO Cancion (id_externo, plataforma, titulo, artista, album, imagen_url, preview_url)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -250,16 +235,13 @@ def asegurar_cancion_existente(datos_cancion: dict):
             connection.commit()
             
         cursor.close()
-        return id_cancion # Retornamos el ID para usarlo luego
+        return id_cancion 
     except Exception as e:
         connection.rollback()
         print(f"Error asegurando cancion: {e}")
         return None
 
-# -----------------------------------------------------------------------------
-# --- 4. PLAYLISTS (NUEVO) ----------------------------------------------------
-# -----------------------------------------------------------------------------
-
+# Inserta nueva playlist
 def crear_playlist_db(id_usuario, nombre):
     try:
         cursor = connection.cursor()
@@ -273,6 +255,7 @@ def crear_playlist_db(id_usuario, nombre):
         print(f"Error creando playlist: {e}")
         return None
 
+# Lista playlists de usuario
 def obtener_playlists_db(id_usuario):
     try:
         cursor = connection.cursor()
@@ -284,6 +267,7 @@ def obtener_playlists_db(id_usuario):
         print(f"Error obteniendo playlists: {e}")
         return []
 
+# Elimina playlist por ID
 def eliminar_playlist_db(id_playlist):
     try:
         cursor = connection.cursor()
@@ -296,8 +280,8 @@ def eliminar_playlist_db(id_playlist):
         print(f"Error eliminando playlist: {e}")
         return False
     
+# Obtiene lista de me gusta
 def obtener_likes_db(id_usuario: int):
-    """Devuelve la lista de canciones que le gustan al usuario"""
     try:
         cursor = connection.cursor()
         query = """
@@ -311,7 +295,6 @@ def obtener_likes_db(id_usuario: int):
         resultados = cursor.fetchall()
         cursor.close()
         
-        # Formatear bonito para el Frontend
         likes = []
         for r in resultados:
             likes.append({
@@ -326,9 +309,8 @@ def obtener_likes_db(id_usuario: int):
         print(f"Error obteniendo likes: {e}")
         return []
     
-# --- GESTIÓN DE CANCIONES EN PLAYLISTS ---
+# Busca ID interno de canción
 def obtener_id_cancion_db(id_externo, plataforma):
-    """Devuelve el ID interno si existe, si no devuelve None"""
     try:
         cursor = connection.cursor()
         cursor.execute(
@@ -341,16 +323,11 @@ def obtener_id_cancion_db(id_externo, plataforma):
     except:
         return None
 
-
+# Vincula canción a playlist
 def agregar_cancion_a_playlist_db(id_playlist: int, datos_cancion: dict):
-    """
-    1. Asegura que la canción exista en la tabla Cancion (si no, la crea).
-    2. Vincula la canción con la playlist.
-    """
     try:
         cursor = connection.cursor()
         
-        # 1. GESTIÓN DE LA CANCIÓN (Reutilizamos lógica parecida al Like)
         cursor.execute(
             "SELECT id_cancion FROM Cancion WHERE id_externo = %s AND plataforma = %s",
             (str(datos_cancion['id_externo']), datos_cancion['plataforma'])
@@ -376,7 +353,6 @@ def agregar_cancion_a_playlist_db(id_playlist: int, datos_cancion: dict):
             ))
             id_cancion = cursor.fetchone()[0]
 
-        # 2. VINCULAR CON PLAYLIST
         query_link = """
             INSERT INTO Cancion_Playlist (id_playlist, id_cancion)
             VALUES (%s, %s)
@@ -391,6 +367,7 @@ def agregar_cancion_a_playlist_db(id_playlist: int, datos_cancion: dict):
         print(f"Error agregando a playlist: {e}")
         return False
 
+# Obtiene tracks de playlist
 def obtener_canciones_playlist_db(id_playlist: int):
     try:
         cursor = connection.cursor()
@@ -412,6 +389,7 @@ def obtener_canciones_playlist_db(id_playlist: int):
         print(f"Error obteniendo canciones de playlist: {e}")
         return []
 
+# Desvincula canción de playlist
 def eliminar_cancion_de_playlist_db(id_playlist: int, id_cancion: int):
     try:
         cursor = connection.cursor()
@@ -426,8 +404,8 @@ def eliminar_cancion_de_playlist_db(id_playlist: int, id_cancion: int):
         connection.rollback()
         return False
     
+# Elimina registro de like
 def eliminar_like_db(id_usuario, id_cancion_db):
-    """Elimina el registro de la tabla Me_Gusta"""
     try:
         cursor = connection.cursor()
         query = "DELETE FROM Me_Gusta WHERE id_usuario = %s AND id_cancion = %s"
@@ -440,42 +418,10 @@ def eliminar_like_db(id_usuario, id_cancion_db):
         print(f"Error eliminando like: {e}")
         return False
 
-def obtener_historial_db(id_usuario):
-    """Obtiene todo lo que el usuario ha visto con TODOS sus datos"""
-    try:
-        cursor = connection.cursor()
-        # AGREGAMOS c.id_externo, c.plataforma y c.preview_url A LA CONSULTA
-        query = """
-            SELECT c.titulo, c.artista, c.imagen_url, h.tipo_interaccion, h.fecha_interaccion, 
-                   c.id_externo, c.plataforma, c.preview_url, c.id_cancion
-            FROM Historial h
-            JOIN Cancion c ON h.id_cancion = c.id_cancion
-            WHERE h.id_usuario = %s
-            ORDER BY h.fecha_interaccion DESC LIMIT 50;
-        """
-        cursor.execute(query, (id_usuario,))
-        res = cursor.fetchall()
-        cursor.close()
-        # Mapeamos correctamente
-        return [{
-            "titulo": r[0], 
-            "artista": r[1], 
-            "imagen": r[2], 
-            "tipo": r[3], 
-            "fecha": r[4],
-            "id_externo": r[5],   # <--- CLAVE PARA EL LIKE
-            "plataforma": r[6],
-            "preview": r[7],      # <--- CLAVE PARA EL AUDIO
-            "id_interno": r[8]
-        } for r in res]
-    except Exception as e:
-        print(f"Error obteniendo historial: {e}")
-        return []
-    
+# Valida login
 def verificar_credenciales_db(username, password):
     try:
         cursor = connection.cursor()
-        # Buscamos coincidencias de usuario y contraseña
         query = "SELECT id_usuario, usuario, email FROM Usuario WHERE usuario = %s AND contrasena = %s"
         cursor.execute(query, (username, password))
         usuario = cursor.fetchone()

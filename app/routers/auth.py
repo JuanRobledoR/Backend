@@ -1,14 +1,9 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-# Asegúrate de tener esta función en funciones_db.py (paso 3 abajo)
 from app.models.funciones_db import crear_usuario_db, verificar_credenciales_db
 
-router = APIRouter(
-    prefix="/auth",
-    tags=["Autenticacion"]
-)
+router = APIRouter(prefix="/auth", tags=["Autenticacion"])
 
-# Esquemas de datos (Lo que React te envía)
 class LoginSchema(BaseModel):
     username: str
     password: str
@@ -18,26 +13,23 @@ class RegisterSchema(BaseModel):
     email: str
     password: str
 
-# --- ENDPOINT LOGIN ---
+# Endpoint de inicio de sesión
 @router.post("/login")
 def login(datos: LoginSchema):
-    # Verifica en base de datos
     usuario_valido = verificar_credenciales_db(datos.username, datos.password)
     
     if not usuario_valido:
         raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
     
-    # Devuelve el ID para que React sepa quién eres
     return {
         "id_usuario": usuario_valido['id_usuario'],
         "username": usuario_valido['username'],
         "token": "token-simulado-123" 
     }
 
-# --- ENDPOINT REGISTRO ---
+# Endpoint de registro de usuario
 @router.post("/register")
 def register(datos: RegisterSchema):
-    # Crea el diccionario para tu función de DB existente
     nuevo_usuario = {
         "nombre_usuario": datos.username, 
         "apellido_paterno": "",

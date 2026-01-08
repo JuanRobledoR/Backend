@@ -1,12 +1,10 @@
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-import os
-import httpx
 
 class SpotifyService:
+    # Autentica el cliente usando credenciales hardcodeadas
     def __init__(self):
         self.sp = None
-        # RECOMENDACIÓN: Usa variables de entorno en producción, pero por ahora tus credenciales hardcodeadas funcionan.
         CLIENT_ID='25cc72c68038426f9192994527a53bcf'.strip()
         CLIENT_SECRET='42940f807b904779ad446b079f29e35d'.strip()
 
@@ -20,15 +18,13 @@ class SpotifyService:
             print(f"Error Auth Spotify: {e}")
             self.sp = None
 
-    # --- FUNCIÓN PRINCIPAL PARA EL FEED ---
+    # Obtiene todas las canciones de una playlist manejando paginación
     def enlistar_playlist(self, PLAYLIST_ID):
-        """Devuelve una lista de diccionarios con metadatos básicos para usar como semilla."""
         if not self.sp: return []
         try:
             resultado = self.sp.playlist_items(PLAYLIST_ID, limit=100)
             lista_completa_items = resultado['items']
 
-            # Paginación (si la playlist es enorme)
             while resultado['next']:
                 resultado = self.sp.next(resultado)
                 lista_completa_items.extend(resultado['items'])
@@ -36,12 +32,10 @@ class SpotifyService:
             lista_canciones = []
             for item in lista_completa_items:
                 track = item.get('track')
-                # Validación estricta para evitar errores si Spotify devuelve nulos
                 if track and track.get('id') and track.get('name'):
                     lista_canciones.append({
                         'id': track['id'],
                         'name': track['name'],
-                        # Estructura segura de artistas
                         'artists': [{'name': art['name']} for art in track.get('artists', [])]
                     })
 
@@ -52,17 +46,19 @@ class SpotifyService:
             print(f"Error enlistando playlist: {e}")
             return []
 
-    # --- HELPERS EXTRAS (Usados por otros endpoints) ---
+    # Retorna objeto track completo
     def leer_datos_cancion(self, TRACK_ID):
         if not self.sp: return None
         try: return self.sp.track(TRACK_ID)
         except: return None
         
+    # Retorna solo el nombre de la canción
     def obtener_nombre_cancion(self, TRACK_ID):
         if not self.sp: return None
         try: return self.sp.track(TRACK_ID).get('name')
         except: return None
             
+    # Retorna lista de nombres de artistas
     def obtener_artista(self, TRACK_ID):
         if not self.sp: return None
         try:
