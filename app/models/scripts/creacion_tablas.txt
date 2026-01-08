@@ -1,3 +1,123 @@
+DROP TABLE IF EXISTS Me_Gusta CASCADE;
+DROP TABLE IF EXISTS Cancion_Playlist CASCADE;
+DROP TABLE IF EXISTS Cancion CASCADE;
+DROP TABLE IF EXISTS Playlist CASCADE;
+DROP TABLE IF EXISTS Usuario CASCADE;
+
+-- 1. USUARIOS 
+CREATE TABLE Usuario (
+    id_usuario SERIAL PRIMARY KEY,
+    nombre_usuario VARCHAR(50) NOT NULL,
+    apellido_paterno VARCHAR(25) NOT NULL,
+    apellido_materno VARCHAR(25),
+    email VARCHAR(100) UNIQUE NOT NULL,
+    usuario VARCHAR(25) UNIQUE NOT NULL,
+    contrasena VARCHAR(25) NOT NULL,
+    tipo_usuario BOOLEAN DEFAULT FALSE,
+    genero BOOLEAN NOT NULL,
+    fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. CANCIONES (El "Catálogo Global" de tu app)
+-- Aquí se guardará todo lo que el usuario busque o de Like, sea de Spotify o Deezer.
+CREATE TABLE Cancion (
+    id_cancion SERIAL PRIMARY KEY,
+    id_externo VARCHAR(100) NOT NULL,
+    plataforma VARCHAR(20) NOT NULL,
+    titulo VARCHAR(200) NOT NULL,
+    artista VARCHAR(200) NOT NULL,
+    album VARCHAR(200),
+    imagen_url TEXT,
+    preview_url TEXT,
+    cromosoma JSONB,
+    CONSTRAINT unq_cancion_externa UNIQUE (id_externo, plataforma)
+);
+
+-- 3. PLAYLISTS (Manuales o Importadas)
+CREATE TABLE Playlist (
+    id_playlist SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    descripcion TEXT,
+    id_usuario INT NOT NULL,
+    url_importada TEXT,               -- Aquí guardas el link de Spotify/Deezer si el usuario lo metió
+    tipo_origen VARCHAR(20) DEFAULT 'MANUAL', -- 'MANUAL', 'SPOTIFY_LINK', 'DEEZER_LINK'
+    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_usuario_pl 
+        FOREIGN KEY (id_usuario) 
+        REFERENCES Usuario(id_usuario) 
+        ON DELETE CASCADE
+);
+
+-- 4. RELACIÓN PLAYLIST <-> CANCIONES
+-- Permite que una playlist (manual o importada) tenga muchas canciones
+CREATE TABLE Cancion_Playlist (
+    id SERIAL PRIMARY KEY,
+    id_playlist INT NOT NULL,
+    id_cancion INT NOT NULL,
+    fecha_agregada TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_cp_playlist 
+        FOREIGN KEY (id_playlist) REFERENCES Playlist(id_playlist) ON DELETE CASCADE,
+    CONSTRAINT fk_cp_cancion 
+        FOREIGN KEY (id_cancion) REFERENCES Cancion(id_cancion) ON DELETE CASCADE,
+    UNIQUE (id_playlist, id_cancion) -- Evita duplicados en la misma playlist
+);
+
+-- 5. ME GUSTA 
+-- Tabla dedicada para guardar los likes del Swiper
+CREATE TABLE Me_Gusta (
+    id_like SERIAL PRIMARY KEY,
+    id_usuario INT NOT NULL,
+    id_cancion INT NOT NULL,
+    fecha_like TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_mg_usuario 
+        FOREIGN KEY (id_usuario) REFERENCES Usuario(id_usuario) ON DELETE CASCADE,
+    CONSTRAINT fk_mg_cancion 
+        FOREIGN KEY (id_cancion) REFERENCES Cancion(id_cancion) ON DELETE CASCADE,
+    UNIQUE (id_usuario, id_cancion) -- Un usuario no puede dar like dos veces a la misma
+);
+
+--6. HISTORIAL
+CREATE TABLE Historial (
+    id_historial SERIAL PRIMARY KEY,
+    id_usuario INTEGER NOT NULL,
+    id_cancion INTEGER NOT NULL,
+    tipo_interaccion VARCHAR(50) DEFAULT 'PLAY', -- Para saber si fue PLAY, SKIP o LIKE
+    fecha_interaccion TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Cuándo ocurrió
+    CONSTRAINT fk_historial_usuario 
+        FOREIGN KEY (id_usuario) REFERENCES Usuario(id_usuario) ON DELETE CASCADE,
+    CONSTRAINT fk_historial_cancion 
+        FOREIGN KEY (id_cancion) REFERENCES Cancion(id_cancion) ON DELETE CASCADE
+);
+
+
+----------SCRIPTS PARA AGREGAR -------------------
+
+-- 1. Columna para el vector de la IA (16 floats)
+ALTER TABLE Cancion ADD COLUMN cromosoma JSONB;
+
+-- 2. Tabla para guardar las 10 canciones iniciales del onboarding
+CREATE TABLE Usuario_Semilla (
+    id_semilla SERIAL PRIMARY KEY,
+    id_usuario INT REFERENCES Usuario(id_usuario) ON DELETE CASCADE,
+    id_cancion INT REFERENCES Cancion(id_cancion) ON DELETE CASCADE,
+    UNIQUE(id_usuario, id_cancion)
+);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------
 -- 0. Limpieza total
 DROP TABLE IF EXISTS Usuario_Semilla CASCADE;
 DROP TABLE IF EXISTS Me_Gusta CASCADE;
