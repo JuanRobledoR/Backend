@@ -342,42 +342,80 @@ async def generar_playlist_inteligente(payload: PlaylistRequest):
 # Crea playlist automática
 @app.post("/crear-playlist-inteligente-auto")
 async def auto_smart_playlist(payload: SmartPlaylistRequest):
-    id_pl = crear_playlist_db(payload.id_usuario, payload.nombre_playlist)
-    analyzer = AudioAnalysisService()
-    
-    likes = obtener_likes_db(payload.id_usuario)
-    if not payload.semilla_id and likes:
-        target_cromosoma = analyzer.generar_cromosoma(likes[0]['preview'])
-        query_artist = likes[0]['artista']
-    else:
-        query_artist = "Daft Punk" 
-        target_cromosoma = np.random.rand(16)
+    cursor = connection.cursor()
+    try:
+        # 1. Crear el registro de la playlist
+        id_pl = crear_playlist_db(payload.id_usuario, payload.nombre_playlist)
+        if not id_pl:
+            raise HTTPException(status_code=500, detail="Error al crear playlist")
 
-    candidatos = []
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"https://api.deezer.com/search?q=artist:'{query_artist}'&limit=50")
-        data = resp.json().get('data', [])
+        # 2. Obtener el "ADN" o vibra del usuario (Target)
+        # Intentamos promediar sus Likes o sus Semillas del Onboarding
+        cursor.execute("""
+            SELECT c.cromosoma FROM Me_Gusta m 
+            JOIN Cancion c ON m.id_cancion = c.id_cancion 
+            WHERE m.id_usuario = %s AND c.cromosoma IS NOT NULL 
+            LIMIT 15
+        """, (payload.id_usuario,))
+        semillas = cursor.fetchall()
         
-        for track in data[:30]: 
-            if track['preview']:
-                cromo = analyzer.generar_cromosoma(track['preview'])
-                if cromo is not None:
-                    candidatos.append({
-                        "id_externo": str(track["id"]), "titulo": track["title"],
-                        "artista": track["artist"]["name"], "imagen_url": track["album"]["cover_xl"],
-                        "preview_url": track["preview"], "cromosoma": cromo.tolist(), "plataforma": "DEEZER"
-                    })
+        if not semillas:
+             cursor.execute("""
+                SELECT c.cromosoma FROM Usuario_Semilla us 
+                JOIN Cancion c ON us.id_cancion = c.id_cancion 
+                WHERE us.id_usuario = %s AND c.cromosoma IS NOT NULL 
+                LIMIT 10
+            """, (payload.id_usuario,))
+             semillas = cursor.fetchall()
 
-    if len(candidatos) > 5:
-        optimizer = GeneticOptimizer(candidatos, target_cromosoma.tolist(), 20)
+        if not semillas:
+            # Si el usuario es nuevo y no tiene nada, usamos un vector aleatorio
+            target_vibe = np.random.rand(16)
+        else:
+            target_vibe = np.mean([np.array(s[0]) for s in semillas], axis=0)
+
+        # 3. Obtener candidatos directamente del POOL de la base de datos (Las 3000 canciones)
+        cursor.execute("""
+            SELECT id_cancion, titulo, artista, imagen_url, preview_url, cromosoma, id_externo 
+            FROM Cancion 
+            WHERE cromosoma IS NOT NULL 
+            ORDER BY RANDOM() LIMIT 400
+        """)
+        
+        rows = cursor.fetchall()
+        pool = [{
+            "id": r[0], "titulo": r[1], "artista": r[2], "imagen": r[3], 
+            "preview": r[4], "cromosoma": r[5], "id_externo": r[6], "plataforma": "DEEZER"
+        } for r in rows]
+
+        if len(pool) < 10:
+            return {"mensaje": "No hay suficientes canciones analizadas en la base de datos", "total": 0}
+
+        # 4. Ejecutar el optimizador genético sobre el pool de la DB
+        optimizer = GeneticOptimizer(pool, target_vibe.tolist(), 10)
         seleccion = optimizer.run()
-    else:
-        seleccion = candidatos
 
-    for track in seleccion:
-        agregar_cancion_a_playlist_db(id_pl, track)
+        # 5. Guardar la selección en la nueva playlist
+        count = 0
+        for track in seleccion:
+            datos_c = {
+                "id_externo": track["id_externo"], 
+                "plataforma": track["plataforma"],
+                "titulo": track["titulo"], 
+                "artista": track["artista"],
+                "imagen_url": track["imagen"], 
+                "preview_url": track["preview"]
+            }
+            if agregar_cancion_a_playlist_db(id_pl, datos_c):
+                count += 1
 
-    return {"mensaje": "Playlist generada", "total": len(seleccion)}
+        return {"mensaje": "Playlist generada con IA", "total": count}
+
+    except Exception as e:
+        print(f"Error en Smart Playlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
 
 # Rellena playlist existente
 @app.post("/completar-playlist-ia")
