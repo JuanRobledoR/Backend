@@ -4,6 +4,7 @@ import asyncio
 import numpy as np
 import httpx
 import os
+import re
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -129,6 +130,16 @@ def crear_playlist_usuario(payload: SavePlaylistRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Extrae el id de una URL de Spotify
+def extraer_spotify_id(url_o_id: str) -> str:
+    match = re.search(r'playlist/([a-zA-Z0-9]{22})', url_o_id)
+    if match:
+        return match.group(1)
+    id_limpio = url_o_id.split('?')[0].split(':')[-1]
+    return id_limpio if len(id_limpio) == 22 else url_o_id
+
+
 # Importa playlist Spotify
 @app.post("/importar-playlist-spotify")
 async def importar_spotify(payload: ImportSpotifyRequest):
@@ -136,7 +147,10 @@ async def importar_spotify(payload: ImportSpotifyRequest):
         sp = SpotifyService()
         analyzer = AudioAnalysisService()
 
-        tracks_spotify = sp.enlistar_playlist(payload.spotify_playlist_id)
+        # Aplicación del script de limpieza de ID
+        spotify_id = extraer_spotify_id(payload.spotify_playlist_id)
+
+        tracks_spotify = sp.enlistar_playlist(spotify_id)
         if not tracks_spotify:
             raise HTTPException(status_code=404, detail="No se encontraron canciones")
 
@@ -144,6 +158,7 @@ async def importar_spotify(payload: ImportSpotifyRequest):
         id_playlist_nueva = crear_playlist_db(payload.id_usuario, nombre_pl)
 
         count_procesadas = 0
+        canciones_para_onboarding = []
         semillas_actuales = contar_semillas_usuario(payload.id_usuario)
 
         async with httpx.AsyncClient() as client:
@@ -182,9 +197,19 @@ async def importar_spotify(payload: ImportSpotifyRequest):
                     if semillas_actuales < 10:
                         registrar_semilla_db(payload.id_usuario, id_cancion_db)
                         semillas_actuales += 1
+                        # Guardamos para devolver al Onboarding
+                        canciones_para_onboarding.append({
+                            "id": t['id'], "titulo": titulo, "artista": artista,
+                            "imagen": datos_cancion['imagen_url'], "preview": datos_cancion['preview_url']
+                        })
                     count_procesadas += 1
 
-        return {"mensaje": "Importación completada", "nuevas": count_procesadas}
+        return {
+            "mensaje": "Importación completada", 
+            "nuevas": count_procesadas, 
+            "canciones": canciones_para_onboarding,
+            "total_semillas": semillas_actuales
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
